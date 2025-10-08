@@ -10,9 +10,20 @@ on:
         description: 'Release version (e.g., 1.2.3)'
         required: true
         type: string
-      base_image_url:
-        description: 'Base bootable image URL for RK3399 board (e.g., Armbian .img.xz/.img)'
+      board:
+        description: 'RK3399 板卡型号（自动选择官方镜像地址）'
         required: true
+        type: choice
+        options:
+          - rockpi-4b
+          - nanopc-t4
+          - nanopi-m4
+          - rockpro64
+          - firefly-rk3399
+        default: rockpi-4b
+      base_image_url:
+        description: '可选：自定义镜像链接（http/https 的 .img/.img.xz/.zip）。留空则按板卡自动选择'
+        required: false
         type: string
 
 jobs:
@@ -73,11 +84,37 @@ jobs:
           path: bin/jetkvm_app
 
       - name: Build bootable RK3399 SD image (workflow_dispatch only)
-        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.version != '' && github.event.inputs.base_image_url != '' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.version != '' }}
         run: |
           set -euo pipefail
           VERSION="${{ github.event.inputs.version }}"
+          BOARD="${{ github.event.inputs.board }}"
           BASE_URL="${{ github.event.inputs.base_image_url }}"
+
+          # If user didn't provide URL, choose based on board
+          if [ -z "$BASE_URL" ]; then
+            case "$BOARD" in
+              rockpi-4b)
+                BASE_URL="https://redirect.armbian.com/rockpi-4b/Jammy_current.img.xz"
+                ;;
+              nanopc-t4)
+                BASE_URL="https://redirect.armbian.com/nanopc-t4/Jammy_current.img.xz"
+                ;;
+              nanopi-m4)
+                BASE_URL="https://redirect.armbian.com/nanopi-m4/Jammy_current.img.xz"
+                ;;
+              rockpro64)
+                BASE_URL="https://redirect.armbian.com/rockpro64/Jammy_current.img.xz"
+                ;;
+              firefly-rk3399)
+                BASE_URL="https://redirect.armbian.com/firefly-rk3399/Jammy_current.img.xz"
+                ;;
+              *)
+                echo "::error::未识别的板卡型号：$BOARD，请提供 base_image_url 为有效的 http/https 链接"
+                exit 1
+                ;;
+            esac
+          fi
 
           # Validate URL
           if ! [[ "$BASE_URL" =~ ^https?:// ]]; then
@@ -199,7 +236,7 @@ jobs:
           cp work/base.img "jetkvm-rk3399-${VERSION}.img"
 
       - name: Upload bootable image to Release
-        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.version != '' && github.event.inputs.base_image_url != '' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.version != '' }}
         uses: softprops/action-gh-release@v1
         with:
           tag_name: v${{ github.event.inputs.version }}

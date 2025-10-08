@@ -99,6 +99,8 @@ jobs:
           BOARD="${{ github.event.inputs.board }}"
           DISTRO="${{ github.event.inputs.distro }}"
           BASE_URL="${{ github.event.inputs.base_image_url }}"
+          # Trim leading/trailing spaces in user-provided URL
+          BASE_URL="$(printf '%s' "$BASE_URL" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
 
           # If user didn't provide URL, choose based on board
           if [ -z "$BASE_URL" ]; then

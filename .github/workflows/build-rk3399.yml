@@ -206,20 +206,20 @@ jobs:
 
           # Try systemd unit (if systemd exists)
           sudo mkdir -p /mnt/rk/root/etc/systemd/system
-          sudo tee /mnt/rk/root/etc/systemd/system/jetkvm.service >/dev/null <<'EOF'
-          [Unit]
-          Description=JetKVM Service
-          After=network.target
-
-          [Service]
-          Type=simple
-          ExecStart=/usr/local/bin/jetkvm_app
-          Restart=always
-          RestartSec=3
-
-          [Install]
-          WantedBy=multi-user.target
-          EOF
+          printf '%s\n' \
+            '[Unit]' \
+            'Description=JetKVM Service' \
+            'After=network.target' \
+            '' \
+            '[Service]' \
+            'Type=simple' \
+            'ExecStart=/usr/local/bin/jetkvm_app' \
+            'Restart=always' \
+            'RestartSec=3' \
+            '' \
+            '[Install]' \
+            'WantedBy=multi-user.target' \
+          | sudo tee /mnt/rk/root/etc/systemd/system/jetkvm.service >/dev/null
 
           # Enable via systemd if present; otherwise create Buildroot init.d script
           if sudo chroot /mnt/rk/root /bin/bash -c 'command -v systemctl >/dev/null 2>&1'; then
@@ -227,61 +227,61 @@ jobs:
           else
             echo "Systemd not found, installing Buildroot init.d script S99jetkvm"
             sudo mkdir -p /mnt/rk/root/etc/init.d
-            sudo tee /mnt/rk/root/etc/init.d/S99jetkvm >/dev/null <<'EOS'
-            #!/bin/sh
-            ### BEGIN INIT INFO
-            # Provides:          jetkvm
-            # Required-Start:
-            # Required-Stop:
-            # Default-Start:     S
-            # Default-Stop:
-            # Short-Description: JetKVM Service
-            ### END INIT INFO
-
-            APP="/usr/local/bin/jetkvm_app"
-            PIDFILE="/var/run/jetkvm.pid"
-
-            have_ssd() {
-              command -v start-stop-daemon >/dev/null 2>&1 || command -v /sbin/start-stop-daemon >/dev/null 2>&1
-            }
-
-            do_start() {
-              if have_ssd; then
-                SSD=$(command -v start-stop-daemon || command -v /sbin/start-stop-daemon)
-                "$SSD" -S -b -m -p "$PIDFILE" -x "$APP"
-              else
-                nohup "$APP" >/var/log/jetkvm.log 2>&1 &
-                echo $! > "$PIDFILE"
-              fi
-            }
-
-            do_stop() {
-              if have_ssd; then
-                SSD=$(command -v start-stop-daemon || command -v /sbin/start-stop-daemon)
-                "$SSD" -K -p "$PIDFILE" -x "$APP"
-              else
-                [ -f "$PIDFILE" ] && kill "$(cat "$PIDFILE")" 2>/dev/null || true
-                rm -f "$PIDFILE"
-              fi
-            }
-
-            case "$1" in
-              start|"")
-                do_start
-                ;;
-              stop)
-                do_stop
-                ;;
-              restart)
-                do_stop; sleep 1; do_start
-                ;;
-              *)
-                echo "Usage: $0 {start|stop|restart}" >&2
-                exit 1
-                ;;
-            esac
-            exit 0
-            EOS
+            printf '%s\n' \
+              '#!/bin/sh' \
+              '### BEGIN INIT INFO' \
+              '# Provides:          jetkvm' \
+              '# Required-Start:' \
+              '# Required-Stop:' \
+              '# Default-Start:     S' \
+              '# Default-Stop:' \
+              '# Short-Description: JetKVM Service' \
+              '### END INIT INFO' \
+              '' \
+              'APP="/usr/local/bin/jetkvm_app"' \
+              'PIDFILE="/var/run/jetkvm.pid"' \
+              '' \
+              'have_ssd() {' \
+              '  command -v start-stop-daemon >/dev/null 2>&1 || command -v /sbin/start-stop-daemon >/dev/null 2>&1' \
+              '}' \
+              '' \
+              'do_start() {' \
+              '  if have_ssd; then' \
+              '    SSD=$(command -v start-stop-daemon || command -v /sbin/start-stop-daemon)' \
+              '    "$SSD" -S -b -m -p "$PIDFILE" -x "$APP"' \
+              '  else' \
+              '    nohup "$APP" >/var/log/jetkvm.log 2>&1 &' \
+              '    echo $! > "$PIDFILE"' \
+              '  fi' \
+              '}' \
+              '' \
+              'do_stop() {' \
+              '  if have_ssd; then' \
+              '    SSD=$(command -v start-stop-daemon || command -v /sbin/start-stop-daemon)' \
+              '    "$SSD" -K -p "$PIDFILE" -x "$APP"' \
+              '  else' \
+              '    [ -f "$PIDFILE" ] && kill "$(cat "$PIDFILE")" 2>/dev/null || true' \
+              '    rm -f "$PIDFILE"' \
+              '  fi' \
+              '}' \
+              '' \
+              'case "$1" in' \
+              '  start|"")' \
+              '    do_start' \
+              '    ;;' \
+              '  stop)' \
+              '    do_stop' \
+              '    ;;' \
+              '  restart)' \
+              '    do_stop; sleep 1; do_start' \
+              '    ;;' \
+              '  *)' \
+              '    echo "Usage: $0 {start|stop|restart}" >&2' \
+              '    exit 1' \
+              '    ;;' \
+              'esac' \
+              'exit 0' \
+            | sudo tee /mnt/rk/root/etc/init.d/S99jetkvm >/dev/null
             sudo chmod +x /mnt/rk/root/etc/init.d/S99jetkvm
           fi
 

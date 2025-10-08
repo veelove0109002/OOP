@@ -10,6 +10,10 @@ on:
         description: 'Release version (e.g., 1.2.3)'
         required: true
         type: string
+      base_image_url:
+        description: 'Base bootable image URL for RK3399 board (e.g., Armbian .img.xz/.img)'
+        required: true
+        type: string
 
 jobs:
   build-arm64:
@@ -67,6 +71,115 @@ jobs:
         with:
           name: jetkvm-app-arm64
           path: bin/jetkvm_app
+
+      - name: Build bootable RK3399 SD image (workflow_dispatch only)
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.version != '' && github.event.inputs.base_image_url != '' }}
+        run: |
+          set -euo pipefail
+          VERSION="${{ github.event.inputs.version }}"
+          BASE_URL="${{ github.event.inputs.base_image_url }}"
+
+          echo "Install tools"
+          sudo apt-get update -y
+          sudo apt-get install -y xz-utils unzip kpartx parted e2fsprogs dosfstools
+
+          echo "Download base image"
+          mkdir -p work
+          cd work
+          FNAME="base.img"
+          # Download
+          curl -L "$BASE_URL" -o base.download
+          # Decompress if needed
+          if file base.download | grep -qi 'XZ'; then
+            xz -d -T0 base.download
+            mv base.download.out base.img || true
+            # some xz outputs keep original name; detect .img
+            IMG_CANDIDATE=$(ls -1 *.img 2>/dev/null | head -n1 || true)
+            if [ -n "$IMG_CANDIDATE" ]; then mv "$IMG_CANDIDATE" base.img; fi
+          elif file base.download | grep -qi 'gzip'; then
+            gzip -d base.download
+            IMG_CANDIDATE=$(ls -1 *.img 2>/dev/null | head -n1 || true)
+            if [ -n "$IMG_CANDIDATE" ]; then mv "$IMG_CANDIDATE" base.img; fi
+          else
+            mv base.download base.img
+          fi
+
+          echo "Attach loop device"
+          sudo losetup -Pf base.img
+          LOOP=$(sudo losetup -j base.img | awk -F: '{print $1}')
+          echo "Loop device: $LOOP"
+
+          echo "Map partitions"
+          sudo kpartx -av "$LOOP"
+          BOOT_DEV=""
+          ROOT_DEV=""
+          # Try typical p1=boot, p2=rootfs
+          if [ -e "/dev/mapper/$(basename $LOOP)p1" ]; then BOOT_DEV="/dev/mapper/$(basename $LOOP)p1"; fi
+          if [ -e "/dev/mapper/$(basename $LOOP)p2" ]; then ROOT_DEV="/dev/mapper/$(basename $LOOP)p2"; fi
+          # Fallback: detect by fs type
+          if [ -z "$ROOT_DEV" ]; then
+            for P in /dev/mapper/$(basename $LOOP)p*; do
+              FSTYPE=$(sudo blkid -o value -s TYPE "$P" || true)
+              if [ "$FSTYPE" = "ext4" ] || [ "$FSTYPE" = "ext3" ]; then ROOT_DEV="$P"; fi
+              if [ "$FSTYPE" = "vfat" ] || [ "$FSTYPE" = "fat32" ]; then BOOT_DEV="$P"; fi
+            done
+          fi
+          echo "BOOT_DEV=$BOOT_DEV ROOT_DEV=$ROOT_DEV"
+
+          echo "Mount partitions"
+          sudo mkdir -p /mnt/rk/root /mnt/rk/boot
+          if [ -n "$ROOT_DEV" ]; then sudo mount "$ROOT_DEV" /mnt/rk/root; fi
+          if [ -n "$BOOT_DEV" ]; then sudo mount "$BOOT_DEV" /mnt/rk/boot; fi
+
+          echo "Install JetKVM binary"
+          sudo install -m 0755 ../bin/jetkvm_app /mnt/rk/root/usr/local/bin/jetkvm_app
+
+          echo "Install UI assets (if present)"
+          if [ -d "../ui/dist" ]; then
+            sudo mkdir -p /mnt/rk/root/opt/jetkvm/ui
+            sudo rsync -a ../ui/dist/ /mnt/rk/root/opt/jetkvm/ui/
+          elif [ -d "../ui/build" ]; then
+            sudo mkdir -p /mnt/rk/root/opt/jetkvm/ui
+            sudo rsync -a ../ui/build/ /mnt/rk/root/opt/jetkvm/ui/
+          fi
+
+          echo "Create systemd service"
+          sudo tee /mnt/rk/root/etc/systemd/system/jetkvm.service >/dev/null <<'EOF'
+          [Unit]
+          Description=JetKVM Service
+          After=network.target
+
+          [Service]
+          Type=simple
+          ExecStart=/usr/local/bin/jetkvm_app
+          Restart=always
+          RestartSec=3
+
+          [Install]
+          WantedBy=multi-user.target
+          EOF
+          sudo chroot /mnt/rk/root /bin/bash -c "systemctl enable jetkvm.service || true"
+
+          echo "Sync and cleanup"
+          sync
+          sudo umount /mnt/rk/boot || true
+          sudo umount /mnt/rk/root || true
+          sudo kpartx -dv "$LOOP" || true
+          sudo losetup -d "$LOOP" || true
+
+          echo "Output final image"
+          cd ..
+          cp work/base.img "jetkvm-rk3399-${VERSION}.img"
+
+      - name: Upload bootable image to Release
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.version != '' && github.event.inputs.base_image_url != '' }}
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ github.event.inputs.version }}
+          name: jetkvm v${{ github.event.inputs.version }}
+          generate_release_notes: true
+          files: |
+            jetkvm-rk3399-${{ github.event.inputs.version }}.img
 
       - name: Create GitHub Release and upload asset
         if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.version != '' }}

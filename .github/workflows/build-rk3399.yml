@@ -5,6 +5,11 @@ on:
       - dev
       - main
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g., 1.2.3)'
+        required: true
+        type: string
 
 jobs:
   build-arm64:
@@ -51,8 +56,24 @@ jobs:
           GO_ARGS: "GOOS=linux GOARCH=arm64 CGO_ENABLED=0"
         run: ./scripts/ci_helper.sh make build_dev
 
+      - name: Package artifact with version (workflow_dispatch only)
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.version != '' }}
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          cp bin/jetkvm_app "bin/jetkvm_app_${VERSION}_linux_arm64"
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: jetkvm-app-arm64
           path: bin/jetkvm_app
+
+      - name: Create GitHub Release and upload asset
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.version != '' }}
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ github.event.inputs.version }}
+          name: jetkvm v${{ github.event.inputs.version }}
+          generate_release_notes: true
+          files: |
+            bin/jetkvm_app_${{ github.event.inputs.version }}_linux_arm64

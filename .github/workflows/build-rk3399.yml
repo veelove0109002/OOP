@@ -293,8 +293,8 @@ jobs:
 
           echo "Output final image (compress to stay under GitHub 2GiB limit)"
           cd ..
-          xz -T0 -9 -c work/base.img > "jetkvm-rk3399-${VERSION}.img.xz"
-          sha256sum "jetkvm-rk3399-${VERSION}.img.xz" > "jetkvm-rk3399-${VERSION}.img.xz.sha256"
+          gzip -c -9 work/base.img > "jetkvm-rk3399-${VERSION}.img.gz"
+          sha256sum "jetkvm-rk3399-${VERSION}.img.gz" > "jetkvm-rk3399-${VERSION}.img.gz.sha256"
 
       - name: Upload bootable image to Release
         if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.version != '' }}
@@ -304,8 +304,8 @@ jobs:
           name: jetkvm v${{ github.event.inputs.version }}
           generate_release_notes: true
           files: |
-            jetkvm-rk3399-${{ github.event.inputs.version }}.img.xz
-            jetkvm-rk3399-${{ github.event.inputs.version }}.img.xz.sha256
+            jetkvm-rk3399-${{ github.event.inputs.version }}.img.gz
+            jetkvm-rk3399-${{ github.event.inputs.version }}.img.gz.sha256
 
       - name: Create GitHub Release and upload asset
         if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.version != '' }}

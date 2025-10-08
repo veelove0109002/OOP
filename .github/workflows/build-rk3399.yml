@@ -185,6 +185,10 @@ jobs:
           if [ -n "$BOOT_DEV" ]; then sudo mount "$BOOT_DEV" /mnt/rk/boot || true; fi
 
           echo "Install JetKVM binary"
+          # ensure target dirs exist
+          sudo mkdir -p /mnt/rk/root/usr/local/bin
+          sudo mkdir -p /mnt/rk/root/var/run
+          sudo mkdir -p /mnt/rk/root/var/log
           sudo install -m 0755 ../bin/jetkvm_app /mnt/rk/root/usr/local/bin/jetkvm_app
 
           echo "Install UI assets (if present)"

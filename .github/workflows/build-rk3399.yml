@@ -21,8 +21,16 @@ on:
           - rockpro64
           - firefly-rk3399
         default: rockpi-4b
+      distro:
+        description: '基础系统发行版'
+        required: true
+        type: choice
+        options:
+          - bookworm
+          - jammy
+        default: bookworm
       base_image_url:
-        description: '可选：自定义镜像链接（http/https 的 .img/.img.xz/.zip）。留空则按板卡自动选择'
+        description: '可选：自定义镜像链接（http/https 的 .img/.img.xz/.zip）。留空则按板卡与发行版自动选择'
         required: false
         type: string
 
@@ -89,25 +97,14 @@ jobs:
           set -euo pipefail
           VERSION="${{ github.event.inputs.version }}"
           BOARD="${{ github.event.inputs.board }}"
+          DISTRO="${{ github.event.inputs.distro }}"
           BASE_URL="${{ github.event.inputs.base_image_url }}"
 
           # If user didn't provide URL, choose based on board
           if [ -z "$BASE_URL" ]; then
             case "$BOARD" in
-              rockpi-4b)
-                BASE_URL="http://redirect.armbian.com/rockpi-4b/Jammy_current.img.xz"
-                ;;
-              nanopc-t4)
-                BASE_URL="http://redirect.armbian.com/nanopc-t4/Jammy_current.img.xz"
-                ;;
-              nanopi-m4)
-                BASE_URL="http://redirect.armbian.com/nanopi-m4/Jammy_current.img.xz"
-                ;;
-              rockpro64)
-                BASE_URL="http://redirect.armbian.com/rockpro64/Jammy_current.img.xz"
-                ;;
-              firefly-rk3399)
-                BASE_URL="http://redirect.armbian.com/firefly-rk3399/Jammy_current.img.xz"
+              rockpi-4b|nanopc-t4|nanopi-m4|rockpro64|firefly-rk3399)
+                BASE_URL="https://redirect.armbian.com/${BOARD}/${DISTRO}/current"
                 ;;
               *)
                 echo "::error::未识别的板卡型号：$BOARD，请提供 base_image_url 为有效的 http/https 链接"
@@ -129,60 +126,41 @@ jobs:
           echo "Download base image"
           mkdir -p work
           cd work
-          SRC_NAME="$(basename "${BASE_URL%%\?*}")"
-          # Robust download: try HTTPS first; if host is redirect.armbian.com and fails, retry via HTTP
+          # Robust download to fixed name
           set +e
-          curl -fSL --retry 3 --retry-delay 2 "$BASE_URL" -o "$SRC_NAME"
+          curl -fSL --retry 3 --retry-delay 2 "$BASE_URL" -o base.download
           CURL_RC=$?
           if [ $CURL_RC -ne 0 ] && echo "$BASE_URL" | grep -qE '^https?://redirect\.armbian\.com/'; then
             ALT_URL="${BASE_URL/https:/http:}"
             echo "HTTPS 下载失败，尝试使用 HTTP: $ALT_URL"
-            curl -fSL --retry 3 --retry-delay 2 "$ALT_URL" -o "$SRC_NAME"
+            curl -fSL --retry 3 --retry-delay 2 "$ALT_URL" -o base.download
             CURL_RC=$?
+            # 如果指定了发行版仍失败，尝试不带发行版的 current
+            if [ $CURL_RC -ne 0 ]; then
+              FALLBACK_URL="http://redirect.armbian.com/${BOARD}/current"
+              echo "按 board fallback: $FALLBACK_URL"
+              curl -fSL --retry 3 --retry-delay 2 "$FALLBACK_URL" -o base.download
+              CURL_RC=$?
+            fi
           fi
           set -e
           [ $CURL_RC -eq 0 ] || { echo "::error::下载基础镜像失败：$BASE_URL"; exit 1; }
 
           echo "Prepare .img from downloaded file"
-          case "$SRC_NAME" in
-            *.img)
-              cp "$SRC_NAME" base.img
-              ;;
-            *.img.xz)
-              xz -d -T0 "$SRC_NAME"
-              IMG_OUT="${SRC_NAME%.xz}"
-              test -f "$IMG_OUT" || { echo "::error::xz 解压后未找到 $IMG_OUT"; exit 1; }
-              mv "$IMG_OUT" base.img
-              ;;
-            *.img.gz)
-              gunzip -f "$SRC_NAME"
-              IMG_OUT="${SRC_NAME%.gz}"
-              test -f "$IMG_OUT" || { echo "::error::gzip 解压后未找到 $IMG_OUT"; exit 1; }
-              mv "$IMG_OUT" base.img
-              ;;
-            *.zip)
-              unzip -o "$SRC_NAME"
-              IMG_CANDIDATE=$(ls -1 *.img 2>/dev/null | head -n1 || true)
-              test -n "$IMG_CANDIDATE" || { echo "::error::zip 文件中未找到 .img"; exit 1; }
-              mv "$IMG_CANDIDATE" base.img
-              ;;
-            *)
-              # Fallback by file type
-              if file "$SRC_NAME" | grep -qi 'XZ'; then
-                xz -d -T0 "$SRC_NAME"
-                IMG_CANDIDATE=$(ls -1 *.img 2>/dev/null | head -n1 || true)
-                test -n "$IMG_CANDIDATE" || { echo "::error::xz 解压后未找到 .img"; exit 1; }
-                mv "$IMG_CANDIDATE" base.img
-              elif file "$SRC_NAME" | grep -qi 'gzip'; then
-                gunzip -f "$SRC_NAME"
-                IMG_CANDIDATE=$(ls -1 *.img 2>/dev/null | head -n1 || true)
-                test -n "$IMG_CANDIDATE" || { echo "::error::gzip 解压后未找到 .img"; exit 1; }
-                mv "$IMG_CANDIDATE" base.img
-              else
-                cp "$SRC_NAME" base.img
-              fi
-              ;;
-          esac
+          # Prepare base.img from base.download using stream to avoid filename dependencies
+          if file base.download | grep -qi 'XZ'; then
+            xz -dc base.download > base.img
+          elif file base.download | grep -qi 'gzip'; then
+            gzip -dc base.download > base.img || gunzip -c base.download > base.img
+          elif file base.download | grep -qi 'Zip'; then
+            unzip -o base.download
+            IMG_CANDIDATE=$(ls -1 *.img 2>/dev/null | head -n1 || true)
+            test -n "$IMG_CANDIDATE" || { echo "::error::zip 文件中未找到 .img"; exit 1; }
+            mv "$IMG_CANDIDATE" base.img
+          else
+            # Assume it's raw .img
+            mv base.download base.img
+          fi
 
           test -f base.img || { echo "::error::未能准备出 base.img"; exit 1; }
 

@@ -95,19 +95,19 @@ jobs:
           if [ -z "$BASE_URL" ]; then
             case "$BOARD" in
               rockpi-4b)
-                BASE_URL="https://redirect.armbian.com/rockpi-4b/Jammy_current.img.xz"
+                BASE_URL="http://redirect.armbian.com/rockpi-4b/Jammy_current.img.xz"
                 ;;
               nanopc-t4)
-                BASE_URL="https://redirect.armbian.com/nanopc-t4/Jammy_current.img.xz"
+                BASE_URL="http://redirect.armbian.com/nanopc-t4/Jammy_current.img.xz"
                 ;;
               nanopi-m4)
-                BASE_URL="https://redirect.armbian.com/nanopi-m4/Jammy_current.img.xz"
+                BASE_URL="http://redirect.armbian.com/nanopi-m4/Jammy_current.img.xz"
                 ;;
               rockpro64)
-                BASE_URL="https://redirect.armbian.com/rockpro64/Jammy_current.img.xz"
+                BASE_URL="http://redirect.armbian.com/rockpro64/Jammy_current.img.xz"
                 ;;
               firefly-rk3399)
-                BASE_URL="https://redirect.armbian.com/firefly-rk3399/Jammy_current.img.xz"
+                BASE_URL="http://redirect.armbian.com/firefly-rk3399/Jammy_current.img.xz"
                 ;;
               *)
                 echo "::error::未识别的板卡型号：$BOARD，请提供 base_image_url 为有效的 http/https 链接"
@@ -124,13 +124,24 @@ jobs:
 
           echo "Install tools"
           sudo apt-get update -y
-          sudo apt-get install -y xz-utils gzip unzip rsync parted e2fsprogs dosfstools
+          sudo apt-get install -y xz-utils gzip unzip rsync parted e2fsprogs dosfstools ca-certificates
 
           echo "Download base image"
           mkdir -p work
           cd work
           SRC_NAME="$(basename "${BASE_URL%%\?*}")"
-          curl -L "$BASE_URL" -o "$SRC_NAME"
+          # Robust download: try HTTPS first; if host is redirect.armbian.com and fails, retry via HTTP
+          set +e
+          curl -fSL --retry 3 --retry-delay 2 "$BASE_URL" -o "$SRC_NAME"
+          CURL_RC=$?
+          if [ $CURL_RC -ne 0 ] && echo "$BASE_URL" | grep -qE '^https?://redirect\.armbian\.com/'; then
+            ALT_URL="${BASE_URL/https:/http:}"
+            echo "HTTPS 下载失败，尝试使用 HTTP: $ALT_URL"
+            curl -fSL --retry 3 --retry-delay 2 "$ALT_URL" -o "$SRC_NAME"
+            CURL_RC=$?
+          fi
+          set -e
+          [ $CURL_RC -eq 0 ] || { echo "::error::下载基础镜像失败：$BASE_URL"; exit 1; }
 
           echo "Prepare .img from downloaded file"
           case "$SRC_NAME" in

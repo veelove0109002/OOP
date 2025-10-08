@@ -79,57 +79,84 @@ jobs:
           VERSION="${{ github.event.inputs.version }}"
           BASE_URL="${{ github.event.inputs.base_image_url }}"
 
+          # Validate URL
+          if ! [[ "$BASE_URL" =~ ^https?:// ]]; then
+            echo "::error::base_image_url 必须为有效的 http/https 链接，例如 https://example.com/armbian.img.xz"
+            exit 1
+          fi
+
           echo "Install tools"
           sudo apt-get update -y
-          sudo apt-get install -y xz-utils unzip kpartx parted e2fsprogs dosfstools
+          sudo apt-get install -y xz-utils gzip unzip rsync parted e2fsprogs dosfstools
 
           echo "Download base image"
           mkdir -p work
           cd work
-          FNAME="base.img"
-          # Download
-          curl -L "$BASE_URL" -o base.download
-          # Decompress if needed
-          if file base.download | grep -qi 'XZ'; then
-            xz -d -T0 base.download
-            mv base.download.out base.img || true
-            # some xz outputs keep original name; detect .img
-            IMG_CANDIDATE=$(ls -1 *.img 2>/dev/null | head -n1 || true)
-            if [ -n "$IMG_CANDIDATE" ]; then mv "$IMG_CANDIDATE" base.img; fi
-          elif file base.download | grep -qi 'gzip'; then
-            gzip -d base.download
-            IMG_CANDIDATE=$(ls -1 *.img 2>/dev/null | head -n1 || true)
-            if [ -n "$IMG_CANDIDATE" ]; then mv "$IMG_CANDIDATE" base.img; fi
-          else
-            mv base.download base.img
-          fi
+          SRC_NAME="$(basename "${BASE_URL%%\?*}")"
+          curl -L "$BASE_URL" -o "$SRC_NAME"
 
-          echo "Attach loop device"
+          echo "Prepare .img from downloaded file"
+          case "$SRC_NAME" in
+            *.img)
+              cp "$SRC_NAME" base.img
+              ;;
+            *.img.xz)
+              xz -d -T0 "$SRC_NAME"
+              IMG_OUT="${SRC_NAME%.xz}"
+              test -f "$IMG_OUT" || { echo "::error::xz 解压后未找到 $IMG_OUT"; exit 1; }
+              mv "$IMG_OUT" base.img
+              ;;
+            *.img.gz)
+              gunzip -f "$SRC_NAME"
+              IMG_OUT="${SRC_NAME%.gz}"
+              test -f "$IMG_OUT" || { echo "::error::gzip 解压后未找到 $IMG_OUT"; exit 1; }
+              mv "$IMG_OUT" base.img
+              ;;
+            *.zip)
+              unzip -o "$SRC_NAME"
+              IMG_CANDIDATE=$(ls -1 *.img 2>/dev/null | head -n1 || true)
+              test -n "$IMG_CANDIDATE" || { echo "::error::zip 文件中未找到 .img"; exit 1; }
+              mv "$IMG_CANDIDATE" base.img
+              ;;
+            *)
+              # Fallback by file type
+              if file "$SRC_NAME" | grep -qi 'XZ'; then
+                xz -d -T0 "$SRC_NAME"
+                IMG_CANDIDATE=$(ls -1 *.img 2>/dev/null | head -n1 || true)
+                test -n "$IMG_CANDIDATE" || { echo "::error::xz 解压后未找到 .img"; exit 1; }
+                mv "$IMG_CANDIDATE" base.img
+              elif file "$SRC_NAME" | grep -qi 'gzip'; then
+                gunzip -f "$SRC_NAME"
+                IMG_CANDIDATE=$(ls -1 *.img 2>/dev/null | head -n1 || true)
+                test -n "$IMG_CANDIDATE" || { echo "::error::gzip 解压后未找到 .img"; exit 1; }
+                mv "$IMG_CANDIDATE" base.img
+              else
+                cp "$SRC_NAME" base.img
+              fi
+              ;;
+          esac
+
+          test -f base.img || { echo "::error::未能准备出 base.img"; exit 1; }
+
+          echo "Attach loop device and detect partitions"
           sudo losetup -Pf base.img
           LOOP=$(sudo losetup -j base.img | awk -F: '{print $1}')
           echo "Loop device: $LOOP"
 
-          echo "Map partitions"
-          sudo kpartx -av "$LOOP"
           BOOT_DEV=""
           ROOT_DEV=""
-          # Try typical p1=boot, p2=rootfs
-          if [ -e "/dev/mapper/$(basename $LOOP)p1" ]; then BOOT_DEV="/dev/mapper/$(basename $LOOP)p1"; fi
-          if [ -e "/dev/mapper/$(basename $LOOP)p2" ]; then ROOT_DEV="/dev/mapper/$(basename $LOOP)p2"; fi
-          # Fallback: detect by fs type
-          if [ -z "$ROOT_DEV" ]; then
-            for P in /dev/mapper/$(basename $LOOP)p*; do
-              FSTYPE=$(sudo blkid -o value -s TYPE "$P" || true)
-              if [ "$FSTYPE" = "ext4" ] || [ "$FSTYPE" = "ext3" ]; then ROOT_DEV="$P"; fi
-              if [ "$FSTYPE" = "vfat" ] || [ "$FSTYPE" = "fat32" ]; then BOOT_DEV="$P"; fi
-            done
-          fi
+          for P in $(lsblk -ln -o NAME,TYPE -p "$LOOP" | awk '$2=="part"{print $1}'); do
+            FSTYPE=$(sudo blkid -o value -s TYPE "$P" || true)
+            if [ "$FSTYPE" = "vfat" ] || [ "$FSTYPE" = "fat32" ]; then BOOT_DEV="$P"; fi
+            if [ "$FSTYPE" = "ext4" ] || [ "$FSTYPE" = "ext3" ]; then ROOT_DEV="$P"; fi
+          done
           echo "BOOT_DEV=$BOOT_DEV ROOT_DEV=$ROOT_DEV"
+          [ -n "$ROOT_DEV" ] || { echo "::error::未检测到 rootfs(ext4) 分区"; exit 1; }
 
           echo "Mount partitions"
           sudo mkdir -p /mnt/rk/root /mnt/rk/boot
-          if [ -n "$ROOT_DEV" ]; then sudo mount "$ROOT_DEV" /mnt/rk/root; fi
-          if [ -n "$BOOT_DEV" ]; then sudo mount "$BOOT_DEV" /mnt/rk/boot; fi
+          sudo mount "$ROOT_DEV" /mnt/rk/root
+          if [ -n "$BOOT_DEV" ]; then sudo mount "$BOOT_DEV" /mnt/rk/boot || true; fi
 
           echo "Install JetKVM binary"
           sudo install -m 0755 ../bin/jetkvm_app /mnt/rk/root/usr/local/bin/jetkvm_app
@@ -158,13 +185,13 @@ jobs:
           [Install]
           WantedBy=multi-user.target
           EOF
-          sudo chroot /mnt/rk/root /bin/bash -c "systemctl enable jetkvm.service || true"
+          # Enable service if systemd is present in rootfs
+          sudo chroot /mnt/rk/root /bin/bash -c "command -v systemctl >/dev/null 2>&1 && systemctl enable jetkvm.service || true"
 
           echo "Sync and cleanup"
           sync
           sudo umount /mnt/rk/boot || true
           sudo umount /mnt/rk/root || true
-          sudo kpartx -dv "$LOOP" || true
           sudo losetup -d "$LOOP" || true
 
           echo "Output final image"
